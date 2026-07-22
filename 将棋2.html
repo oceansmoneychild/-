@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ブラウザ将棋</title>
+
+<style>
+:root {
+    --board-cell: 48px;
+    --board-color: #f5d38d;
+    --page-color: #d6b46a;
+    --hand-color: rgba(243, 208, 138, 0.88);
+    --selected-color: orange;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--page-color);
+    font-family: sans-serif;
+    text-align: center;
+    overflow-x: auto;
+}
+
+h1 {
+    margin: 15px 0 5px;
+}
+
+#turn {
+    font-size: 26px;
+    margin: 5px 0;
+}
+
+/* 勝利メッセージ */
+#result {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 32px;
+    font-weight: bold;
+    color: #d90429;
+    background: rgba(255, 255, 255, 0.95);
+    padding: 18px 36px;
+    border: 4px solid #d90429;
+    border-radius: 12px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    display: none;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+#game {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    padding: 0 10px;
+    box-sizing: border-box;
+    position: relative;
+}
+
+/* 持ち駒表示板：盤面に重ねつつ、背景はクリックを透過 */
+.hand {
+    width: 206px;
+    min-height: 480px;
+    padding: 10px 6px;
+    background: var(--hand-color);
+    border: 2px solid #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 50; 
+    pointer-events: none;
+}
+
+/* 左側：先手持ち駒板 */
+#blackHand {
+    margin-right: -144px;
+}
+
+/* 右側：後手持ち駒板 */
+#whiteHand {
+    margin-left: -144px;
+}
+
+/* 将棋盤全体 */
+#board-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    z-index: 30; 
+}
+
+#board {
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+/* マスの基本スタイル */
+#board td {
+    width: var(--board-cell);
+    min-width: var(--board-cell);
+    max-width: var(--board-cell);
+    height: var(--board-cell);
+    position: relative;
+    font-size: 24px;
+    line-height: var(--board-cell);
+    text-align: center;
+    cursor: pointer;
+    user-select: none;
+    padding: 0;
+}
+
+/* マスの背景・枠線 */
+.cell-bg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--board-color);
+    border: 1px solid #000;
+    z-index: 1;
+    box-sizing: border-box;
+}
+
+/* 駒の文字 */
+.piece-text {
+    position: relative;
+    z-index: 2;
+    display: block;
+    width: 100%;
+    height: 100%;
+    line-height: var(--board-cell);
+}
+
+/* 成り駒（赤文字） */
+.piece-text.promoted {
+    color: red;
+    font-weight: bold;
+}
+
+#board td.empty-cell {
+    cursor: default;
+}
+
+#board td.selected .cell-bg {
+    background: var(--selected-color) !important;
+}
+
+.hand h3 {
+    margin: 0 0 10px;
+    font-size: 16px;
+    pointer-events: auto;
+}
+
+/* 持ち駒ボタン：ボタン単体は確実に押せるようにする */
+.hand button {
+    width: 44px;
+    height: 44px;
+    margin: 3px 0;
+    font-size: 22px;
+    cursor: pointer;
+    position: relative;
+    z-index: 60;
+    pointer-events: auto; 
+}
+
+.hand button.selected-hand {
+    background: var(--selected-color);
+}
+</style>
+</head>
+
+<body>
+<h1>将棋</h1>
+
+<div id="game">
+    <!-- 左端：先手持ち駒板 -->
+    <div id="blackHand" class="hand"></div>
+
+    <div id="board-container">
+        <div>
+            <div id="turn"></div>
+            <div id="result"></div>
+            <table id="board" aria-label="将棋盤"></table>
+        </div>
+    </div>
+
+    <!-- 右端：後手持ち駒板 -->
+    <div id="whiteHand" class="hand"></div>
+</div>
+
+<script>
+"use strict";
+
+const BASE_ROWS = 9;
+const BASE_COLS = 13;
+const EMPTY = "";
+
+const OFFSET_Y = 4;
+const OFFSET_X = 6;
+
+const MIN_GX = OFFSET_X - 6; 
+const MAX_GX = OFFSET_X + (BASE_COLS - 1) + 6; 
+const MIN_GY = OFFSET_Y - 3;
+const MAX_GY = OFFSET_Y + (BASE_ROWS - 1) + 3;
+
+const GRID_ROWS = 20;
+const GRID_COLS = 30;
+
+let grid = Array.from({ length: GRID_ROWS }, () =>
+    Array.from({ length: GRID_COLS }, () => ({
+        exists: false,
+        piece: EMPTY,
+        owner: EMPTY,
+        promoted: false,
+        isWhite: false
+    }))
+);
+
+const initialBoard = [
+    ["恋","犬","香","桂","銀","金","王","金","銀","桂","香","犬","尻"],
+    ["", "", "", "飛", "", "", "", "", "", "角", "", "", ""],
+    ["掘", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", ""],
+    ["", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "歩", "掘"],
+    ["", "", "", "角", "", "", "", "", "", "飛", "", "", ""],
+    ["尻","犬","香","桂","銀","金","王","金","銀","桂","香","犬","恋"]
+];
+
+function initGrid() {
+    for (let r = 0; r < BASE_ROWS; r++) {
+        for (let c = 0; c < BASE_COLS; c++) {
+            const gy = r + OFFSET_Y;
+            const gx = c + OFFSET_X;
+            const p = initialBoard[r][c];
+            grid[gy][gx].exists = true;
+            grid[gy][gx].piece = p;
+            grid[gy][gx].promoted = false;
+            grid[gy][gx].isWhite = false;
+
+            if (p !== EMPTY) {
+                grid[gy][gx].owner = r <= 2 ? "white" : r >= 6 ? "black" : EMPTY;
+
+                if (p === "歩" && (c === 1 || c === 11)) {
+                    grid[gy][gx].isWhite = true;
+                }
+            }
+        }
+    }
+}
+
+const handBlack = [];
+const handWhite = [];
+
+let turn = "black";
+let gameOver = false;
+let selected = null;
+let selectedHand = null;
+
+const table = document.getElementById("board");
+const turnElement = document.getElementById("turn");
+const resultElement = document.getElementById("result");
+const blackHandElement = document.getElementById("blackHand");
+const whiteHandElement = document.getElementById("whiteHand");
+
+function normalizePiece(piece) {
+    if (!piece) return EMPTY;
+    const promoted = { "と": "歩", "馬": "角", "龍": "飛", "成銀": "銀", "成桂": "桂", "成香": "香" };
+    return promoted[piece] || piece;
+}
+
+function getCell(gx, gy) {
+    if (gy < 0 || gy >= GRID_ROWS || gx < 0 || gx >= GRID_COLS) {
+        return { exists: false, piece: EMPTY, owner: EMPTY, promoted: false, isWhite: false };
+    }
+    return grid[gy][gx];
+}
+
+function getEnemyKingPos(owner) {
+    const enemyOwner = owner === "black" ? "white" : "black";
+    for (let gy = 0; gy < GRID_ROWS; gy++) {
+        for (let gx = 0; gx < GRID_COLS; gx++) {
+            const cell = grid[gy][gx];
+            if (cell.exists && cell.piece === "王" && cell.owner === enemyOwner) {
+                return { gx, gy };
+            }
+        }
+    }
+    return null;
+}
+
+function isPathClear(sgx, sgy, tgx, tgy) {
+    const stepX = Math.sign(tgx - sgx);
+    const stepY = Math.sign(tgy - sgy);
+    let curX = sgx + stepX;
+    let curY = sgy + stepY;
+
+    while (curX !== tgx || curY !== tgy) {
+        const cell = getCell(curX, curY);
+        if (cell.exists && cell.piece && cell.piece.trim() !== EMPTY) {
+            return false;
+        }
+        curX += stepX;
+        curY += stepY;
+    }
+    return true;
+}
+
+function isEnemyZone(gy, owner) {
+    if (owner === "black") {
+        return gy <= OFFSET_Y + 2;
+    } else if (owner === "white") {
+        return gy >= OFFSET_Y + BASE_ROWS - 3;
+    }
+    return false;
+}
+
+function isPieceOnEnemyHandPosition(gx, gy) {
+    const cellData = getCell(gx, gy);
+    if (!cellData.exists || !cellData.piece || cellData.piece === EMPTY) return false;
+
+    if (cellData.owner === "black" && gx >= MAX_GX - 2) return true;
+    if (cellData.owner === "white" && gx <= MIN_GX + 2) return true;
+
+    return false;
+}
+
+/* すべての持ち駒は、現在マスになっている（exists === true）かつ空いている（piece === EMPTY）場所にのみ置けるように修正 */
+function canDrop(gx, gy) {
+    if (selectedHand === null) return false;
+
+    const targetCell = getCell(gx, gy);
+    return targetCell.exists && targetCell.piece === EMPTY;
+}
+
+function draw() {
+    table.innerHTML = "";
+
+    for (let gy = MIN_GY; gy <= MAX_GY; gy++) {
+        const row = document.createElement("tr");
+
+        for (let gx = MIN_GX; gx <= MAX_GX; gx++) {
+            const cell = document.createElement("td");
+            cell.id = `cell-${gx}-${gy}`;
+            const cellData = getCell(gx, gy);
+
+            const isSelectedCell = selected !== null && selected.gx === gx && selected.gy === gy;
+            const isMovableCell = (selected !== null && !selected.isStolen) && !isSelectedCell && canMove(selected.gx, selected.gy, gx, gy);
+            const isDroppableCell = selectedHand !== null && canDrop(gx, gy);
+
+            if (cellData.exists) {
+                const bg = document.createElement("div");
+                bg.className = "cell-bg";
+
+                const textSpan = document.createElement("span");
+                textSpan.className = "piece-text";
+                textSpan.textContent = cellData.piece;
+
+                if (cellData.promoted) {
+                    textSpan.classList.add("promoted");
+                }
+
+                if (cellData.isWhite) {
+                    textSpan.style.color = "#ffffff";
+                    textSpan.style.textShadow = "0 0 3px #000, 0 0 3px #000, 0 0 3px #000";
+                    textSpan.style.fontWeight = "bold";
+                } else {
+                    textSpan.style.color = "";
+                    textSpan.style.textShadow = "";
+                }
+
+                if (normalizePiece(cellData.piece) === "恋") {
+                    const kingPos = getEnemyKingPos(cellData.owner);
+                    if (kingPos) {
+                        const dist = Math.max(Math.abs(gx - kingPos.gx), Math.abs(gy - kingPos.gy));
+                        if (dist <= 3) {
+                            textSpan.style.color = "#ff0000";
+                            textSpan.style.fontWeight = "bold";
+                        } else if (dist <= 5) {
+                            textSpan.style.color = "#ff1111";
+                        } else if (dist <= 7) {
+                            textSpan.style.color = "#e65c00";
+                        } else {
+                            textSpan.style.color = "#000000";
+                        }
+                    }
+                }
+
+                if (isSelectedCell) {
+                    cell.classList.add("selected");
+                } else if (isMovableCell || isDroppableCell) {
+                    bg.style.background = "#b7e4c7";
+                }
+
+                if (cellData.owner === "white") {
+                    textSpan.style.transform = "rotate(180deg)";
+                }
+
+                if (cellData.piece !== EMPTY && cellData.owner !== turn && isPieceOnEnemyHandPosition(gx, gy)) {
+                    bg.style.border = "2px dashed red";
+                }
+
+                cell.appendChild(bg);
+                cell.appendChild(textSpan);
+            } else if (isMovableCell || isDroppableCell) {
+                const bg = document.createElement("div");
+                bg.className = "cell-bg";
+                bg.style.background = "#b7e4c7";
+                bg.style.border = "1px dashed #000";
+
+                cell.appendChild(bg);
+            } else {
+                cell.classList.add("empty-cell");
+            }
+
+            cell.addEventListener("click", () => clickCell(gx, gy));
+
+            row.appendChild(cell);
+        }
+
+        table.appendChild(row);
+    }
+
+    turnElement.textContent = turn === "black" ? "☗先手の番" : "☖後手の番";
+    drawHands();
+}
+
+function drawHands() {
+    blackHandElement.innerHTML = "<h3>☗先手 持ち駒</h3>";
+    whiteHandElement.innerHTML = "<h3>☖後手 持ち駒</h3>";
+
+    handBlack.forEach((piece, index) => {
+        if (piece && piece.trim() !== EMPTY) {
+            const button = createHandButton(piece, index, "black");
+            blackHandElement.appendChild(button);
+        }
+    });
+
+    handWhite.forEach((piece, index) => {
+        if (piece && piece.trim() !== EMPTY) {
+            const button = createHandButton(piece, index, "white");
+            button.style.transform = "rotate(180deg)";
+            whiteHandElement.appendChild(button);
+        }
+    });
+}
+
+function createHandButton(piece, index, side) {
+    const button = document.createElement("button");
+    button.textContent = piece;
+
+    const isSelectedHandButton = selectedHand !== null && selectedHand.side === side && selectedHand.index === index;
+    button.classList.toggle("selected-hand", isSelectedHandButton);
+
+    button.addEventListener("click", () => {
+        if (turn !== side) return;
+        
+        if (selectedHand !== null && selectedHand.side === side && selectedHand.index === index) {
+            selectedHand = null;
+        } else {
+            selected = null;
+            selectedHand = { side, index, piece };
+        }
+        draw();
+    });
+
+    return button;
+}
+
+function clickCell(gx, gy) {
+    if (gameOver) return;
+
+    if (selectedHand !== null) {
+        if (canDrop(gx, gy)) {
+            dropPiece(gx, gy);
+        } else {
+            selectedHand = null;
+            draw();
+        }
+        return;
+    }
+
+    const targetCell = getCell(gx, gy);
+
+    if (selected === null) {
+        if (targetCell.exists && targetCell.piece !== EMPTY && targetCell.owner !== turn) {
+            if (isPieceOnEnemyHandPosition(gx, gy)) {
+                selected = { gx, gy, isStolen: true };
+                draw();
+                return;
+            }
+        }
+
+        if (targetCell.exists && targetCell.owner === turn) {
+            selected = { gx, gy, isStolen: false };
+            draw();
+        }
+        return;
+    }
+
+    if (selected.gx === gx && selected.gy === gy) {
+        selected = null;
+        draw();
+        return;
+    }
+
+    if (selected.isStolen) {
+        if (targetCell.exists && targetCell.piece === EMPTY) {
+            const originCell = getCell(selected.gx, selected.gy);
+            
+            targetCell.piece = normalizePiece(originCell.piece);
+            targetCell.owner = turn;
+            targetCell.promoted = false;
+            targetCell.isWhite = false;
+
+            originCell.piece = EMPTY;
+            originCell.owner = EMPTY;
+            originCell.promoted = false;
+            originCell.isWhite = false;
+
+            selected = null;
+            turn = turn === "black" ? "white" : "black";
+            draw();
+        } else {
+            selected = null;
+            draw();
+        }
+        return;
+    }
+
+    if (canMove(selected.gx, selected.gy, gx, gy)) {
+        const moved = movePiece(selected.gx, selected.gy, gx, gy);
+        selected = null;
+
+        if (moved && !gameOver) {
+            turn = turn === "black" ? "white" : "black";
+        }
+    } else {
+        selected = null;
+    }
+
+    draw();
+}
+
+function dropPiece(gx, gy) {
+    if (!canDrop(gx, gy)) return;
+
+    const targetCell = getCell(gx, gy);
+    const hand = selectedHand.side === "black" ? handBlack : handWhite;
+    let pieceToPlace = normalizePiece(selectedHand.piece);
+
+    targetCell.piece = pieceToPlace;
+    targetCell.owner = selectedHand.side;
+    targetCell.promoted = false;
+    targetCell.isWhite = false;
+
+    hand.splice(selectedHand.index, 1);
+    selectedHand = null;
+    turn = turn === "black" ? "white" : "black";
+
+    draw();
+}
+
+function movePiece(sgx, sgy, tgx, tgy) {
+    const sCell = getCell(sgx, sgy);
+    const tCell = getCell(tgx, tgy);
+
+    const movingPiece = sCell.piece;
+    const movingOwner = sCell.owner;
+    const wasPromoted = sCell.promoted;
+    const wasWhite = sCell.isWhite;
+
+    if (normalizePiece(movingPiece) === "掘") {
+        if (!tCell.exists) {
+            tCell.exists = true;
+        }
+    }
+
+    if (tCell.exists && tCell.piece && tCell.piece.trim() !== EMPTY) {
+        if (tCell.piece === "王") {
+            resultElement.textContent = movingOwner === "black" ? "☗ 先手の勝ち！" : "☖ 後手の勝ち！";
+            resultElement.style.display = "block";
+            gameOver = true;
+        }
+        const captured = normalizePiece(tCell.piece);
+        if (captured && captured.trim() !== EMPTY) {
+            const hand = movingOwner === "black" ? handBlack : handWhite;
+            hand.push(captured);
+        }
+    }
+
+    tCell.piece = movingPiece;
+    tCell.owner = movingOwner;
+    tCell.isWhite = wasWhite;
+
+    if (wasWhite) {
+        const randomCandidates = ["歩", "金", "銀", "桂", "香"];
+        tCell.piece = randomCandidates[Math.floor(Math.random() * randomCandidates.length)];
+        tCell.promoted = false;
+    } else {
+        const normP = normalizePiece(movingPiece);
+        const promotablePieces = ["歩", "香", "桂", "角", "飛"];
+
+        if (!wasPromoted && promotablePieces.includes(normP)) {
+            if (isEnemyZone(sgy, movingOwner) || isEnemyZone(tgy, movingOwner)) {
+                tCell.promoted = true;
+                if (normP === "歩") {
+                    tCell.piece = "と";
+                }
+            } else {
+                tCell.promoted = false;
+            }
+        } else {
+            tCell.promoted = wasPromoted;
+        }
+    }
+
+    sCell.piece = EMPTY;
+    sCell.owner = EMPTY;
+    sCell.promoted = false;
+    sCell.isWhite = false;
+
+    return true;
+}
+
+function canMove(sgx, sgy, tgx, tgy) {
+    if (tgx < MIN_GX || tgx > MAX_GX || tgy < MIN_GY || tgy > MAX_GY) {
+        return false;
+    }
+
+    const sCell = getCell(sgx, sgy);
+    const tCell = getCell(tgx, tgy);
+    const movingPiece = normalizePiece(sCell.piece);
+    const isPromoted = sCell.promoted;
+
+    const dgx = tgx - sgx;
+    const dgy = tgy - sgy;
+
+    if (movingPiece === "掘") {
+        const isCrossMove = (Math.abs(dgx) === 1 && dgy === 0) || (dgx === 0 && Math.abs(dgy) === 1);
+        if (!isCrossMove) return false;
+
+        if (!tCell.exists) {
+            return tgy >= OFFSET_Y && tgy < OFFSET_Y + BASE_ROWS;
+        }
+        return tCell.owner !== turn;
+    }
+
+    if (movingPiece === "恋") {
+        const kingPos = getEnemyKingPos(turn);
+        let dist = 99;
+        if (kingPos) {
+            dist = Math.max(Math.abs(sgx - kingPos.gx), Math.abs(sgy - kingPos.gy));
+        }
+
+        const absX = Math.abs(dgx);
+        const absY = Math.abs(dgy);
+
+        const isCross = (dgx === 0 || dgy === 0);
+        if (!isCross) return false;
+
+        if (dist <= 3) {
+            if (dgx === 0 && absY === 1) {
+                return !tCell.exists || tCell.owner !== turn;
+            }
+            return false;
+        }
+
+        let maxRange = 3;
+        if (dist <= 5) maxRange = 1;
+        else if (dist <= 7) maxRange = 2;
+
+        const moveDist = Math.max(absX, absY);
+        if (moveDist > maxRange) return false;
+
+        if (!tCell.exists || tCell.owner === turn) return false;
+
+        return isPathClear(sgx, sgy, tgx, tgy);
+    }
+
+    if (!tCell.exists) return false;
+    if (tCell.owner === turn) return false;
+
+    const direction = turn === "black" ? -1 : 1;
+
+    if (isPromoted && (movingPiece === "歩" || movingPiece === "香" || movingPiece === "桂" || movingPiece === "と")) {
+        return (
+            (dgy === direction && Math.abs(dgx) <= 1) ||
+            (dgy === 0 && Math.abs(dgx) === 1) ||
+            (dgy === -direction && dgx === 0)
+        );
+    }
+
+    if (isPromoted && movingPiece === "角") {
+        if (Math.abs(dgx) === Math.abs(dgy)) {
+            return isPathClear(sgx, sgy, tgx, tgy);
+        }
+        return Math.abs(dgx) + Math.abs(dgy) === 1;
+    }
+
+    if (isPromoted && movingPiece === "飛") {
+        if (dgx === 0 || dgy === 0) {
+            return isPathClear(sgx, sgy, tgx, tgy);
+        }
+        return Math.abs(dgx) === 1 && Math.abs(dgy) === 1;
+    }
+
+    switch (movingPiece) {
+        case "歩":
+            return dgx === 0 && dgy === direction;
+
+        case "王":
+        case "尻":
+            return Math.abs(dgx) <= 1 && Math.abs(dgy) <= 1;
+
+        case "金":
+            return (
+                (dgy === direction && Math.abs(dgx) <= 1) ||
+                (dgy === 0 && Math.abs(dgx) === 1) ||
+                (dgy === -direction && dgx === 0)
+            );
+
+        case "銀":
+            return (
+                (dgy === direction && Math.abs(dgx) <= 1) ||
+                (dgy === -direction && Math.abs(dgx) === 1)
+            );
+
+        case "桂":
+            return Math.abs(dgx) === 1 && dgy === direction * 2;
+
+        case "香":
+            return dgx === 0 &&
+                   ((direction === -1 && dgy < 0) || (direction === 1 && dgy > 0)) &&
+                   isPathClear(sgx, sgy, tgx, tgy);
+
+        case "飛":
+            return (dgx === 0 || dgy === 0) && isPathClear(sgx, sgy, tgx, tgy);
+
+        case "角":
+            return Math.abs(dgx) === Math.abs(dgy) && isPathClear(sgx, sgy, tgx, tgy);
+
+        default:
+            return false;
+    }
+}
+
+initGrid();
+draw();
+</script>
+</body>
+</html>
